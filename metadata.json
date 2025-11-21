@@ -1,0 +1,5 @@
+{
+  "name": "CivGenesis - God Game Prototype",
+  "description": "A low-poly procedural civilization simulator with a React Three Fiber 3D world and Glassmorphism UI.",
+  "requestFramePermissions": []
+}
