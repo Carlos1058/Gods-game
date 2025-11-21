@@ -12,19 +12,21 @@ interface HumanProps {
   age: number;
   reproductionCooldown: number;
   xp: number;
+  houseId: number | null;
 }
 
 // Configuración de comportamiento
 const MOVE_SPEED_BASE = 3.5;
-const MAP_LIMIT = 22;
+const MAP_LIMIT = 75;
 const HUNGER_THRESHOLD = 40; 
 const LOVE_THRESHOLD = 60;   
 const MATURITY_AGE = 18;     
 const EATING_DISTANCE = 1.2; 
 const LOVING_DISTANCE = 1.8; 
 const PERSONAL_SPACE = 1.0;  
+const MINING_DISTANCE = 1.5;
 
-export const Human: React.FC<HumanProps> = ({ id, position, name, hunger, age, reproductionCooldown, xp }) => {
+export const Human: React.FC<HumanProps> = ({ id, position, name, hunger, age, reproductionCooldown, xp, houseId }) => {
   const groupRef = useRef<Group>(null);
   const bodyMeshRef = useRef<Mesh>(null);
   
@@ -35,11 +37,10 @@ export const Human: React.FC<HumanProps> = ({ id, position, name, hunger, age, r
     idleTimer: 0,
     timeToWait: 0,
     lastCooldown: 0,
-    currentVelocity: new Vector3()
+    currentVelocity: new Vector3(),
+    miningTimer: 0 // Para animación de picar
   });
 
-  // VISUALES: Usamos useMemo para calcular colores solo cuando cambian las props críticas.
-  // Esto es ligero y correcto para React.
   const statusColor = useMemo(() => {
     if (hunger > 60) return '#4ade80'; // Verde
     if (hunger > 30) return '#facc15'; // Amarillo
@@ -51,7 +52,6 @@ export const Human: React.FC<HumanProps> = ({ id, position, name, hunger, age, r
     return Math.min(1, 0.3 + (age / MATURITY_AGE) * 0.7);
   }, [age]);
 
-  // Inicialización de posición
   useLayoutEffect(() => {
     if (groupRef.current) {
       const tracked = humanPositions.get(id);
@@ -64,60 +64,70 @@ export const Human: React.FC<HumanProps> = ({ id, position, name, hunger, age, r
     }
   }, [id]);
 
-  const pickRandomTarget = (currentPos: Vector3, range: number = 10) => {
-    let x = currentPos.x + (Math.random() - 0.5) * range * 2;
-    let z = currentPos.z + (Math.random() - 0.5) * range * 2;
+  const pickRandomTarget = (currentPos: Vector3, housePos?: Vector3) => {
+    const range = housePos ? 15 : 25; 
+    const center = housePos ? housePos : currentPos;
+
+    let x = center.x + (Math.random() - 0.5) * range * 2;
+    let z = center.z + (Math.random() - 0.5) * range * 2;
+    
     x = Math.max(-MAP_LIMIT, Math.min(MAP_LIMIT, x));
     z = Math.max(-MAP_LIMIT, Math.min(MAP_LIMIT, z));
     return new Vector3(x, 0, z);
   };
 
-  // LÓGICA IMPERATIVA: Todo el cálculo pesado va aquí dentro sin suscripciones de React
-  useFrame((_, delta) => {
+  useFrame((stateContext, delta) => {
     if (!groupRef.current) return;
 
-    // 1. ACCESO DIRECTO AL STORE
-    // Leemos el estado actual directamente para evitar re-renders masivos.
     const state = useGameStore.getState();
     
-    // Pausa estricta e inmediata
     if (!state.isPlaying) return;
 
-    // Cap Delta: Evita que un lag spike cause teletransportación (El bug de velocidad 20x en 1x)
-    // Si el frame tardó más de 0.1s, lo tratamos como 0.1s
     const safeDelta = Math.min(delta, 0.1);
     const currentSpeed = state.speed;
 
     const s = internalState.current;
     const currentPos = groupRef.current.position;
     
-    // Actualizar mapa global de posiciones
     humanPositions.set(id, [currentPos.x, currentPos.y, currentPos.z]);
     
-    // Detector de paternidad (Huida post-parto)
     if (s.lastCooldown === 0 && reproductionCooldown > 10) {
-        s.target = pickRandomTarget(currentPos, 20);
+        s.target = pickRandomTarget(currentPos); 
         s.isMoving = true;
         s.timeToWait = 0;
     }
     s.lastCooldown = reproductionCooldown;
 
     // --- LÓGICA DE DECISIÓN (IA) ---
+    // Prioridad: Comida > Casa > Reproducción > Trabajo (Minería) > Ir a Casa
     
     let intendedTarget: Vector3 | null = null;
-    let mode: 'IDLE' | 'SEEKING_FOOD' | 'SEEKING_MATE' = 'IDLE';
+    let mode: 'IDLE' | 'SEEKING_FOOD' | 'SEEKING_MATE' | 'GOING_HOME' | 'BUILDING' | 'MINING' = 'IDLE';
     let stopMovingThreshold = 0.2;
 
-    // Prioridad 1: Comida
-    if (hunger < HUNGER_THRESHOLD) {
+    let myHousePos: Vector3 | undefined = undefined;
+    if (houseId) {
+        const house = state.houses.find(h => h.id === houseId);
+        if (house) myHousePos = new Vector3(house.position[0], 0, house.position[2]);
+    }
+
+    // 1. PRIORIDAD ABSOLUTA: COMIDA (Supervivencia)
+    const shouldSeekFood = hunger < HUNGER_THRESHOLD || (!houseId && hunger < 70);
+    
+    if (shouldSeekFood) {
       mode = 'SEEKING_FOOD';
-      
       let closestFood = null;
       let minDistSq = Infinity;
 
-      // Iteramos sobre el array crudo del store (rápido)
       for (const food of state.foods) {
         const distSq = (food.position[0] - currentPos.x)**2 + (food.position[2] - currentPos.z)**2;
+        
+        // Si tengo casa, prefiero comida cerca, pero si muero de hambre voy a donde sea
+        if (myHousePos && hunger > 20) {
+            const distToHouse = (food.position[0] - myHousePos.x)**2 + (food.position[2] - myHousePos.z)**2;
+            if (distToHouse > 30*30) continue; 
+        }
+        
         if (distSq < minDistSq) {
           minDistSq = distSq;
           closestFood = food;
@@ -127,24 +137,60 @@ export const Human: React.FC<HumanProps> = ({ id, position, name, hunger, age, r
       if (closestFood) {
         intendedTarget = new Vector3(closestFood.position[0], 0, closestFood.position[2]);
         stopMovingThreshold = EATING_DISTANCE;
-        
         if (Math.sqrt(minDistSq) < EATING_DISTANCE) {
           state.eatFood(id, closestFood.id);
           s.isMoving = false;
         }
+      } else if (myHousePos && hunger < 20) {
+          // Si tengo mucha hambre y no hay comida cerca de casa, olvido mi casa para sobrevivir
+          myHousePos = undefined; 
       }
     }
-    // Prioridad 2: Reproducción
-    else if (hunger > LOVE_THRESHOLD && age > MATURITY_AGE && reproductionCooldown === 0) {
+
+    // 2. PRIORIDAD ALTA: VIVIENDA (Refugio)
+    // Si no tengo casa, mi objetivo principal tras comer es conseguir una.
+    if (!intendedTarget && !houseId) {
+        // A) Buscar casa vacía
+        const emptyHouse = state.houses.find(h => h.ownerId === null);
+        if (emptyHouse) {
+             const distSq = (emptyHouse.position[0] - currentPos.x)**2 + (emptyHouse.position[2] - currentPos.z)**2;
+             // Solo voy si está razonablemente cerca para no cruzar el mapa entero a lo loco
+             if (distSq < 120*120) { 
+                 intendedTarget = new Vector3(emptyHouse.position[0], 0, emptyHouse.position[2]);
+                 stopMovingThreshold = 1.5;
+                 if (distSq < 2.5) {
+                     state.claimHouse(id, emptyHouse.id);
+                 }
+             }
+        }
+
+        // B) Construir casa (Si tengo suficiente energía y recursos cercanos)
+        // Aumentada la probabilidad de construcción
+        if (!intendedTarget && hunger > 60) {
+            // Intenta construir cerca de recursos o comida
+            if (Math.random() < 0.02) { 
+                 const buildPos: [number, number, number] = [
+                     currentPos.x + (Math.random() - 0.5) * 4,
+                     0,
+                     currentPos.z + (Math.random() - 0.5) * 4
+                 ];
+                 state.buildHouse(id, buildPos);
+                 mode = 'BUILDING';
+            }
+        }
+    }
+
+    // 3. PRIORIDAD MEDIA: REPRODUCCIÓN (Familia)
+    // Solo si tengo casa (o soy nomada feliz) y estoy bien alimentado
+    if (!intendedTarget && hunger > LOVE_THRESHOLD && age > MATURITY_AGE && reproductionCooldown === 0) {
       mode = 'SEEKING_MATE';
       let closestMateId = -1;
       let minDistSq = Infinity;
 
-      // Usamos humanPositions para distancia rápida, y state.humans solo para verificar edad
-      // Esto es una optimización crítica O(N)
       for (const other of state.humans) {
         if (other.id === id) continue;
         if (other.age < MATURITY_AGE) continue; 
+        // Evitar incesto directo simple (opcional, no implementado estrictamente por ID)
 
         const realPos = humanPositions.get(other.id);
         if (!realPos) continue;
@@ -162,35 +208,94 @@ export const Human: React.FC<HumanProps> = ({ id, position, name, hunger, age, r
         stopMovingThreshold = LOVING_DISTANCE;
 
         if (Math.sqrt(minDistSq) < LOVING_DISTANCE) {
-             if (Math.random() < 0.05) { // Probabilidad baja por frame para no spamear
+             // Probabilidad de éxito en el encuentro
+             if (Math.random() < 0.05) { 
                  state.attemptReproduction(id, closestMateId, [currentPos.x, 0, currentPos.z]);
              }
         }
       }
     }
 
-    // Visual Debugging (Colores)
+    // 4. PRIORIDAD BAJA: TRABAJO (Minería)
+    // Si tengo mis necesidades básicas cubiertas y no estoy en cooldown reproductivo (o estoy esperando), trabajo.
+    if (!intendedTarget && hunger > 65 && state.resources.length > 0) {
+        let closestRes = null;
+        let minResDistSq = Infinity;
+
+        for (const res of state.resources) {
+            const distSq = (res.position[0] - currentPos.x)**2 + (res.position[2] - currentPos.z)**2;
+            
+            // Si tengo casa, prefiero trabajar "cerca" (radio amplio)
+            if (myHousePos) {
+                const distToHouse = (res.position[0] - myHousePos.x)**2 + (res.position[2] - myHousePos.z)**2;
+                if (distToHouse > 40*40) continue; 
+            }
+
+            if (distSq < minResDistSq) {
+                minResDistSq = distSq;
+                closestRes = res;
+            }
+        }
+
+        if (closestRes) {
+            mode = 'MINING';
+            intendedTarget = new Vector3(closestRes.position[0], 0, closestRes.position[2]);
+            stopMovingThreshold = MINING_DISTANCE;
+            
+            if (Math.sqrt(minResDistSq) < MINING_DISTANCE) {
+                s.isMoving = false;
+                // Velocidad de minado depende del XP
+                const mineChance = 0.05 + (xp * 0.01);
+                if (Math.random() < mineChance * currentSpeed) { 
+                    state.mineResource(id, closestRes.id);
+                }
+            }
+        }
+    }
+
+    // 5. PRIORIDAD FINAL: IR A CASA (Descanso)
+    // Si no tengo nada más que hacer y tengo casa, voy a ella.
+    if (!intendedTarget && houseId && myHousePos && mode !== 'MINING') {
+        const distToHome = currentPos.distanceTo(myHousePos);
+        if (distToHome > 2) { // Si estoy lejos
+             mode = 'GOING_HOME';
+             intendedTarget = myHousePos;
+             stopMovingThreshold = 2.0; 
+        }
+    }
+
+    // Animaciones Visuales (Colores de depuración visual)
     if (bodyMeshRef.current) {
         const mat = bodyMeshRef.current.material as MeshStandardMaterial;
-        if (mode === 'SEEKING_FOOD') mat.color.set('#ff5722');
-        else if (mode === 'SEEKING_MATE') mat.color.set('#ff69b4');
+        if (mode === 'SEEKING_FOOD') mat.color.set('#ff5722'); // Naranja
+        else if (mode === 'SEEKING_MATE') mat.color.set('#ff69b4'); // Rosa
+        else if (mode === 'GOING_HOME') mat.color.set('#8d6e63'); // Marrón
+        else if (mode === 'MINING') mat.color.set('#64748b'); // Gris
+        else if (mode === 'BUILDING') mat.color.set('#fbbf24'); // Amarillo
         else mat.color.set('white');
+
+        // Animación de Minería (Saltitos)
+        if (mode === 'MINING' && !s.isMoving) {
+            s.miningTimer += delta * 10;
+            bodyMeshRef.current.position.y = Math.abs(Math.sin(s.miningTimer)) * 0.3;
+        } else {
+            bodyMeshRef.current.position.y = 0;
+            s.miningTimer = 0;
+        }
     }
 
     // --- MOVIMIENTO FÍSICO ---
-
     if (intendedTarget) {
         s.target.copy(intendedTarget);
         const distToTarget = currentPos.distanceTo(s.target);
         s.isMoving = distToTarget > stopMovingThreshold;
     }
 
-    // Idle Wandering
     if (mode === 'IDLE') {
        if (!s.isMoving) {
           s.idleTimer += safeDelta * currentSpeed;
           if (s.idleTimer >= s.timeToWait) {
-            s.target = pickRandomTarget(currentPos);
+            s.target = pickRandomTarget(currentPos, myHousePos);
             s.isMoving = true;
             s.idleTimer = 0;
           }
@@ -200,22 +305,20 @@ export const Human: React.FC<HumanProps> = ({ id, position, name, hunger, age, r
        }
     }
 
-    // Cálculo de Vectores
     const finalMove = new Vector3(0, 0, 0);
 
-    // 1. Fuerza de Voluntad
     if (s.isMoving) {
         const direction = new Vector3().subVectors(s.target, currentPos);
         direction.y = 0;
         if (direction.lengthSq() > 0.01) {
             direction.normalize();
             let moveSpeed = MOVE_SPEED_BASE * currentSpeed;
-            if (mode === 'SEEKING_MATE') moveSpeed *= 1.2;
+            if (mode === 'SEEKING_MATE') moveSpeed *= 1.2; // Corren por amor
             finalMove.add(direction.multiplyScalar(moveSpeed));
         }
     }
 
-    // 2. Fuerza de Separación (Evitar superposición)
+    // Separación básica (boids separation)
     const separation = new Vector3();
     let count = 0;
     humanPositions.forEach((pos, otherId) => {
@@ -232,26 +335,33 @@ export const Human: React.FC<HumanProps> = ({ id, position, name, hunger, age, r
         }
     });
     
+    // Evitar chocar con casas
+    state.houses.forEach(house => {
+        const dx = currentPos.x - house.position[0];
+        const dz = currentPos.z - house.position[2];
+        const distSq = dx*dx + dz*dz;
+        if (distSq < 2.0 * 2.0) {
+             const dist = Math.sqrt(distSq);
+             const force = (2.5 - dist) / 2.5;
+             separation.x += (dx / (dist || 0.01)) * force * 5; // Fuera fuerza repulsiva
+             separation.z += (dz / (dist || 0.01)) * force * 5;
+             count++;
+        }
+    });
+    
     if (count > 0) {
-        // Multiplicamos por speed para que la física escale con el tiempo del juego
         finalMove.add(separation.multiplyScalar(4.0 * currentSpeed));
     }
 
-    // Aplicar movimiento
     if (finalMove.lengthSq() > 0.001) {
-        // Interpolación simple para suavizar
-        s.currentVelocity.lerp(finalMove, 0.2); // Inercia suave
+        s.currentVelocity.lerp(finalMove, 0.2);
         
-        // Paso final: Velocidad * Tiempo
         const step = s.currentVelocity.clone().multiplyScalar(safeDelta);
-        
         const newPos = currentPos.clone().add(step);
         
-        // Clamping al mapa
         newPos.x = Math.max(-MAP_LIMIT, Math.min(MAP_LIMIT, newPos.x));
         newPos.z = Math.max(-MAP_LIMIT, Math.min(MAP_LIMIT, newPos.z));
 
-        // Rotación suave
         if (step.lengthSq() > 0.01) {
             const lookTarget = currentPos.clone().add(step);
             groupRef.current.lookAt(lookTarget.x, currentPos.y, lookTarget.z);
@@ -272,7 +382,7 @@ export const Human: React.FC<HumanProps> = ({ id, position, name, hunger, age, r
         outlineWidth={0.03}
         outlineColor="#000000"
       >
-        {name} (Lvl {Math.floor(xp / 5)})
+        {name}
       </Text>
 
       <mesh position={[0, 1.9, 0]}>
