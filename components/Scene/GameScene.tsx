@@ -7,17 +7,24 @@ import { useGameStore } from '../../store/gameStore';
 const GameLoop = () => {
   const { isPlaying, speed, tick } = useGameStore();
   const timeRef = useRef(0);
+  
+  // Ejecutamos la lógica de juego 10 veces por segundo de "tiempo de juego"
+  // Si speed es 1, son 10 ticks por segundo real.
+  // Si speed es 5, son 50 ticks por segundo real.
+  const TICK_RATE = 0.1; 
 
   useFrame((state, delta) => {
     if (!isPlaying) return;
 
-    // Simple logic to tick the year based on speed
-    // At 1x speed, 1 year per second roughly
     timeRef.current += delta * speed;
     
-    if (timeRef.current >= 1) {
+    // While loop para catch-up si el frame time es largo, 
+    // pero limitado para evitar espiral de la muerte en lag.
+    let ticksProcessed = 0;
+    while (timeRef.current >= TICK_RATE && ticksProcessed < 5) {
       tick();
-      timeRef.current = 0;
+      timeRef.current -= TICK_RATE;
+      ticksProcessed++;
     }
   });
 
@@ -34,7 +41,7 @@ export const GameScene: React.FC = () => {
           enablePan={true} 
           enableZoom={true} 
           enableRotate={true} 
-          maxPolarAngle={Math.PI / 2 - 0.1} // Evitar ir debajo del suelo
+          maxPolarAngle={Math.PI / 2 - 0.1} 
           minDistance={5}
           maxDistance={40}
         />

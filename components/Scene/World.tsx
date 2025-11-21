@@ -1,9 +1,11 @@
 import React from 'react';
 import { useGameStore } from '../../store/gameStore';
 import { Human } from './Human';
+import { FoodSource } from './FoodSource';
 
 export const World: React.FC = () => {
   const humans = useGameStore((state) => state.humans);
+  const foods = useGameStore((state) => state.foods);
 
   return (
     <group>
@@ -16,12 +18,19 @@ export const World: React.FC = () => {
       {/* Grid Helper para referencia visual */}
       <gridHelper args={[50, 50, 0xffffff, 0x334433]} position={[0, 0.01, 0]} />
 
+      {/* Recursos (Comida) */}
+      {foods.map((food) => (
+        <FoodSource key={food.id} position={food.position} />
+      ))}
+
       {/* Renderizado de Agentes (Humanos) */}
       {humans.map((human) => (
         <Human 
           key={human.id} 
+          id={human.id}
           position={human.position} 
-          name={human.name} 
+          name={human.name}
+          hunger={human.hunger}
         />
       ))}
     </group>
