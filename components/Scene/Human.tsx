@@ -1,7 +1,7 @@
-import React, { useRef, useMemo } from 'react';
+import React, { useRef, useMemo, useLayoutEffect } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { Vector3, Group } from 'three';
-import { useGameStore } from '../../store/gameStore';
+import { Vector3, Group, Mesh, MeshStandardMaterial } from 'three';
+import { useGameStore, humanPositions } from '../../store/gameStore';
 import { Text } from '@react-three/drei';
 
 interface HumanProps {
@@ -9,49 +9,62 @@ interface HumanProps {
   position: [number, number, number];
   name: string;
   hunger: number;
+  age: number;
+  reproductionCooldown: number;
+  xp: number;
 }
 
 // Configuración de comportamiento
-const MOVE_SPEED_BASE = 2;
-const MAP_LIMIT = 20;
-const IDLE_TIME_MIN = 1;
-const IDLE_TIME_MAX = 2;
-const HUNGER_THRESHOLD = 50; // A partir de aquí busca comida
-const EATING_DISTANCE = 0.8; // Distancia para comer
+const MOVE_SPEED_BASE = 3.5;
+const MAP_LIMIT = 22;
+const HUNGER_THRESHOLD = 40; 
+const LOVE_THRESHOLD = 60;   
+const MATURITY_AGE = 18;     
+const EATING_DISTANCE = 1.2; 
+const LOVING_DISTANCE = 1.8; 
+const PERSONAL_SPACE = 1.0;  
 
-export const Human: React.FC<HumanProps> = ({ id, position, name, hunger }) => {
+export const Human: React.FC<HumanProps> = ({ id, position, name, hunger, age, reproductionCooldown, xp }) => {
   const groupRef = useRef<Group>(null);
+  const bodyMeshRef = useRef<Mesh>(null);
   
-  // Acceso al store
-  const isPlaying = useGameStore(state => state.isPlaying);
-  const speed = useGameStore(state => state.speed);
-  const foods = useGameStore(state => state.foods);
-  const eatFood = useGameStore(state => state.eatFood);
-  
-  // Estado interno para movimiento y lógica (ref para performance en loop)
+  // Estado interno para IA y movimiento suave
   const internalState = useRef({
     target: new Vector3(position[0], position[1], position[2]),
     isMoving: false,
     idleTimer: 0,
     timeToWait: 0,
-    state: 'IDLE' as 'IDLE' | 'SEEKING_FOOD'
+    lastCooldown: 0,
+    currentVelocity: new Vector3()
   });
 
-  // Color aleatorio ropa
-  const clothingColor = useMemo(() => {
-    const colors = ['#e2e8f0', '#cbd5e1', '#94a3b8']; 
-    return colors[Math.floor(Math.random() * colors.length)];
-  }, []);
-
-  // Color indicador de hambre
+  // VISUALES: Usamos useMemo para calcular colores solo cuando cambian las props críticas.
+  // Esto es ligero y correcto para React.
   const statusColor = useMemo(() => {
-    if (hunger > 50) return '#4ade80'; // Verde
-    if (hunger > 20) return '#facc15'; // Amarillo
+    if (hunger > 60) return '#4ade80'; // Verde
+    if (hunger > 30) return '#facc15'; // Amarillo
     return '#ef4444'; // Rojo
   }, [hunger]);
 
-  const pickRandomTarget = (currentPos: Vector3) => {
-    const range = 8;
+  const scale = useMemo(() => {
+    if (age === undefined) return 1;
+    return Math.min(1, 0.3 + (age / MATURITY_AGE) * 0.7);
+  }, [age]);
+
+  // Inicialización de posición
+  useLayoutEffect(() => {
+    if (groupRef.current) {
+      const tracked = humanPositions.get(id);
+      if (tracked) {
+          groupRef.current.position.set(tracked[0], tracked[1], tracked[2]);
+      } else {
+          groupRef.current.position.set(position[0], position[1], position[2]);
+          humanPositions.set(id, position);
+      }
+    }
+  }, [id]);
+
+  const pickRandomTarget = (currentPos: Vector3, range: number = 10) => {
     let x = currentPos.x + (Math.random() - 0.5) * range * 2;
     let z = currentPos.z + (Math.random() - 0.5) * range * 2;
     x = Math.max(-MAP_LIMIT, Math.min(MAP_LIMIT, x));
@@ -59,117 +72,224 @@ export const Human: React.FC<HumanProps> = ({ id, position, name, hunger }) => {
     return new Vector3(x, 0, z);
   };
 
+  // LÓGICA IMPERATIVA: Todo el cálculo pesado va aquí dentro sin suscripciones de React
   useFrame((_, delta) => {
-    if (!isPlaying || !groupRef.current) return;
+    if (!groupRef.current) return;
+
+    // 1. ACCESO DIRECTO AL STORE
+    // Leemos el estado actual directamente para evitar re-renders masivos.
+    const state = useGameStore.getState();
+    
+    // Pausa estricta e inmediata
+    if (!state.isPlaying) return;
+
+    // Cap Delta: Evita que un lag spike cause teletransportación (El bug de velocidad 20x en 1x)
+    // Si el frame tardó más de 0.1s, lo tratamos como 0.1s
+    const safeDelta = Math.min(delta, 0.1);
+    const currentSpeed = state.speed;
 
     const s = internalState.current;
     const currentPos = groupRef.current.position;
     
-    // --- LÓGICA DE IA: Decidir objetivo ---
+    // Actualizar mapa global de posiciones
+    humanPositions.set(id, [currentPos.x, currentPos.y, currentPos.z]);
     
-    // Si tiene hambre, intentar buscar comida
-    if (hunger < HUNGER_THRESHOLD) {
-      // Buscar comida más cercana
-      let closestFood = null;
-      let minDist = Infinity;
+    // Detector de paternidad (Huida post-parto)
+    if (s.lastCooldown === 0 && reproductionCooldown > 10) {
+        s.target = pickRandomTarget(currentPos, 20);
+        s.isMoving = true;
+        s.timeToWait = 0;
+    }
+    s.lastCooldown = reproductionCooldown;
 
-      for (const food of foods) {
-        const dist = Math.sqrt(
-          Math.pow(food.position[0] - currentPos.x, 2) + 
-          Math.pow(food.position[2] - currentPos.z, 2)
-        );
-        if (dist < minDist) {
-          minDist = dist;
+    // --- LÓGICA DE DECISIÓN (IA) ---
+    
+    let intendedTarget: Vector3 | null = null;
+    let mode: 'IDLE' | 'SEEKING_FOOD' | 'SEEKING_MATE' = 'IDLE';
+    let stopMovingThreshold = 0.2;
+
+    // Prioridad 1: Comida
+    if (hunger < HUNGER_THRESHOLD) {
+      mode = 'SEEKING_FOOD';
+      
+      let closestFood = null;
+      let minDistSq = Infinity;
+
+      // Iteramos sobre el array crudo del store (rápido)
+      for (const food of state.foods) {
+        const distSq = (food.position[0] - currentPos.x)**2 + (food.position[2] - currentPos.z)**2;
+        if (distSq < minDistSq) {
+          minDistSq = distSq;
           closestFood = food;
         }
       }
 
       if (closestFood) {
-        // Cambiar objetivo a la comida
-        s.state = 'SEEKING_FOOD';
-        s.target.set(closestFood.position[0], 0, closestFood.position[2]);
-        s.isMoving = true;
-
-        // Verificar si llegó a la comida para comer
-        if (minDist < EATING_DISTANCE) {
-          eatFood(id, closestFood.id);
-          // Reiniciar comportamiento
-          s.state = 'IDLE';
+        intendedTarget = new Vector3(closestFood.position[0], 0, closestFood.position[2]);
+        stopMovingThreshold = EATING_DISTANCE;
+        
+        if (Math.sqrt(minDistSq) < EATING_DISTANCE) {
+          state.eatFood(id, closestFood.id);
           s.isMoving = false;
-          s.timeToWait = 1; 
-        }
-      } else {
-        // No hay comida, seguir vagando con desesperación
-        if (s.state !== 'IDLE' && !s.isMoving) {
-            s.state = 'IDLE'; // Fallback
         }
       }
-    } else {
-        // No tiene hambre, comportamiento normal
-        s.state = 'IDLE';
+    }
+    // Prioridad 2: Reproducción
+    else if (hunger > LOVE_THRESHOLD && age > MATURITY_AGE && reproductionCooldown === 0) {
+      mode = 'SEEKING_MATE';
+      let closestMateId = -1;
+      let minDistSq = Infinity;
+
+      // Usamos humanPositions para distancia rápida, y state.humans solo para verificar edad
+      // Esto es una optimización crítica O(N)
+      for (const other of state.humans) {
+        if (other.id === id) continue;
+        if (other.age < MATURITY_AGE) continue; 
+
+        const realPos = humanPositions.get(other.id);
+        if (!realPos) continue;
+
+        const distSq = (realPos[0] - currentPos.x)**2 + (realPos[2] - currentPos.z)**2;
+        if (distSq < minDistSq) {
+          minDistSq = distSq;
+          closestMateId = other.id;
+        }
+      }
+
+      if (closestMateId !== -1) {
+        const matePos = humanPositions.get(closestMateId)!;
+        intendedTarget = new Vector3(matePos[0], 0, matePos[2]);
+        stopMovingThreshold = LOVING_DISTANCE;
+
+        if (Math.sqrt(minDistSq) < LOVING_DISTANCE) {
+             if (Math.random() < 0.05) { // Probabilidad baja por frame para no spamear
+                 state.attemptReproduction(id, closestMateId, [currentPos.x, 0, currentPos.z]);
+             }
+        }
+      }
     }
 
-    // --- LÓGICA DE MOVIMIENTO ---
+    // Visual Debugging (Colores)
+    if (bodyMeshRef.current) {
+        const mat = bodyMeshRef.current.material as MeshStandardMaterial;
+        if (mode === 'SEEKING_FOOD') mat.color.set('#ff5722');
+        else if (mode === 'SEEKING_MATE') mat.color.set('#ff69b4');
+        else mat.color.set('white');
+    }
 
+    // --- MOVIMIENTO FÍSICO ---
+
+    if (intendedTarget) {
+        s.target.copy(intendedTarget);
+        const distToTarget = currentPos.distanceTo(s.target);
+        s.isMoving = distToTarget > stopMovingThreshold;
+    }
+
+    // Idle Wandering
+    if (mode === 'IDLE') {
+       if (!s.isMoving) {
+          s.idleTimer += safeDelta * currentSpeed;
+          if (s.idleTimer >= s.timeToWait) {
+            s.target = pickRandomTarget(currentPos);
+            s.isMoving = true;
+            s.idleTimer = 0;
+          }
+       } else if (currentPos.distanceTo(s.target) < 0.5) {
+             s.isMoving = false;
+             s.timeToWait = 1 + Math.random() * 2;
+       }
+    }
+
+    // Cálculo de Vectores
+    const finalMove = new Vector3(0, 0, 0);
+
+    // 1. Fuerza de Voluntad
     if (s.isMoving) {
-      const direction = new Vector3().subVectors(s.target, currentPos);
-      const distance = direction.length();
-      // Si tiene mucha hambre corre un poco más rápido (opcional, visual detail)
-      const hungerBoost = hunger < 20 ? 1.5 : 1;
-      const step = MOVE_SPEED_BASE * speed * hungerBoost * delta;
-
-      if (distance < step) {
-        currentPos.copy(s.target);
-        s.isMoving = false;
-        s.idleTimer = 0;
-        s.timeToWait = (IDLE_TIME_MIN + Math.random() * (IDLE_TIME_MAX - IDLE_TIME_MIN));
-      } else {
-        direction.normalize().multiplyScalar(step);
-        currentPos.add(direction);
-        groupRef.current.lookAt(s.target.x, currentPos.y, s.target.z);
-      }
-    } else {
-      // IDLE Wait
-      if (s.state === 'IDLE') {
-        s.idleTimer += delta * speed;
-        if (s.idleTimer >= s.timeToWait) {
-          s.target = pickRandomTarget(currentPos);
-          s.isMoving = true;
+        const direction = new Vector3().subVectors(s.target, currentPos);
+        direction.y = 0;
+        if (direction.lengthSq() > 0.01) {
+            direction.normalize();
+            let moveSpeed = MOVE_SPEED_BASE * currentSpeed;
+            if (mode === 'SEEKING_MATE') moveSpeed *= 1.2;
+            finalMove.add(direction.multiplyScalar(moveSpeed));
         }
-      } else if (s.state === 'SEEKING_FOOD') {
-         // Si estaba buscando comida pero dejó de moverse (llegó a destino y la comida desapareció justo antes),
-         // forzar nueva búsqueda
-         s.isMoving = true; 
-      }
+    }
+
+    // 2. Fuerza de Separación (Evitar superposición)
+    const separation = new Vector3();
+    let count = 0;
+    humanPositions.forEach((pos, otherId) => {
+        if (otherId === id) return;
+        const dx = currentPos.x - pos[0];
+        const dz = currentPos.z - pos[2];
+        const distSq = dx*dx + dz*dz;
+        if (distSq < PERSONAL_SPACE * PERSONAL_SPACE) {
+            const dist = Math.sqrt(distSq);
+            const force = (PERSONAL_SPACE - dist) / PERSONAL_SPACE;
+            separation.x += (dx / (dist || 0.01)) * force;
+            separation.z += (dz / (dist || 0.01)) * force;
+            count++;
+        }
+    });
+    
+    if (count > 0) {
+        // Multiplicamos por speed para que la física escale con el tiempo del juego
+        finalMove.add(separation.multiplyScalar(4.0 * currentSpeed));
+    }
+
+    // Aplicar movimiento
+    if (finalMove.lengthSq() > 0.001) {
+        // Interpolación simple para suavizar
+        s.currentVelocity.lerp(finalMove, 0.2); // Inercia suave
+        
+        // Paso final: Velocidad * Tiempo
+        const step = s.currentVelocity.clone().multiplyScalar(safeDelta);
+        
+        const newPos = currentPos.clone().add(step);
+        
+        // Clamping al mapa
+        newPos.x = Math.max(-MAP_LIMIT, Math.min(MAP_LIMIT, newPos.x));
+        newPos.z = Math.max(-MAP_LIMIT, Math.min(MAP_LIMIT, newPos.z));
+
+        // Rotación suave
+        if (step.lengthSq() > 0.01) {
+            const lookTarget = currentPos.clone().add(step);
+            groupRef.current.lookAt(lookTarget.x, currentPos.y, lookTarget.z);
+        }
+
+        groupRef.current.position.copy(newPos);
     }
   });
 
   return (
-    <group ref={groupRef} position={position}>
-      {/* Etiqueta Debug / Nombre */}
+    <group ref={groupRef} scale={[scale, scale, scale]}>
       <Text 
-        position={[0, 2.2, 0]} 
-        fontSize={0.3} 
+        position={[0, 2.5, 0]} 
+        fontSize={0.4} 
         color="white" 
         anchorX="center" 
         anchorY="middle"
-        outlineWidth={0.02}
+        outlineWidth={0.03}
         outlineColor="#000000"
       >
-        {name} ({Math.floor(hunger)}%)
+        {name} (Lvl {Math.floor(xp / 5)})
       </Text>
 
-      {/* Indicador de Estado */}
-      <mesh position={[0, 1.6, 0]}>
-        <sphereGeometry args={[0.15, 8, 8]} />
+      <mesh position={[0, 1.9, 0]}>
+        <sphereGeometry args={[0.2, 8, 8]} />
         <meshBasicMaterial color={statusColor} />
       </mesh>
 
-      {/* Cuerpo */}
-      <mesh position={[0, 0.75, 0]} castShadow receiveShadow>
-        <capsuleGeometry args={[0.3, 0.9, 4, 8]} />
-        <meshStandardMaterial color={clothingColor} roughness={0.5} />
-      </mesh>
+      <group position={[0, 0.9, 0]}>
+          <mesh ref={bodyMeshRef} castShadow receiveShadow>
+            <capsuleGeometry args={[0.35, 1.0, 4, 8]} />
+            <meshStandardMaterial color="white" roughness={0.5} />
+          </mesh>
+          <mesh position={[0, 0.8, 0]} castShadow>
+            <sphereGeometry args={[0.25, 16, 16]} />
+            <meshStandardMaterial color="#ffccaa" /> 
+          </mesh>
+      </group>
     </group>
   );
 };

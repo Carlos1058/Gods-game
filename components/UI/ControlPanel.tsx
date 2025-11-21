@@ -38,16 +38,16 @@ export const ControlPanel: React.FC = () => {
             1x
           </button>
           <button 
-             onClick={() => setSpeed(2)}
-            className={`px-3 py-1 rounded-md text-sm font-bold transition-colors ${speed === 2 ? 'bg-white/20 text-white' : 'text-slate-400 hover:text-white'}`}
-          >
-            2x
-          </button>
-          <button 
              onClick={() => setSpeed(5)}
             className={`px-3 py-1 rounded-md text-sm font-bold transition-colors ${speed === 5 ? 'bg-white/20 text-white' : 'text-slate-400 hover:text-white'}`}
           >
             5x
+          </button>
+          <button 
+             onClick={() => setSpeed(20)}
+            className={`px-3 py-1 rounded-md text-sm font-bold transition-colors ${speed === 20 ? 'bg-white/20 text-white' : 'text-slate-400 hover:text-white'}`}
+          >
+            20x
           </button>
         </div>
 

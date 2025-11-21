@@ -10,7 +10,7 @@ export const TopBar: React.FC = () => {
       <GlassPanel className="flex items-center space-x-8 px-8 py-3">
         <div className="flex flex-col items-center">
           <span className="text-xs text-slate-300 uppercase tracking-widest font-bold">Año</span>
-          <span className="text-xl font-mono font-bold text-sky-300">{year}</span>
+          <span className="text-xl font-mono font-bold text-sky-300">{Math.floor(year)}</span>
         </div>
         
         <div className="w-px h-8 bg-white/20" />

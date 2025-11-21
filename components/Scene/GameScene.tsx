@@ -5,26 +5,39 @@ import { World } from './World';
 import { useGameStore } from '../../store/gameStore';
 
 const GameLoop = () => {
-  const { isPlaying, speed, tick } = useGameStore();
+  // Solo nos suscribimos a variables de control esenciales para montar/desmontar lógica
+  const isPlaying = useGameStore(state => state.isPlaying);
+  const speed = useGameStore(state => state.speed);
+  const tick = useGameStore(state => state.tick);
+  
   const timeRef = useRef(0);
   
-  // Ejecutamos la lógica de juego 10 veces por segundo de "tiempo de juego"
-  // Si speed es 1, son 10 ticks por segundo real.
-  // Si speed es 5, son 50 ticks por segundo real.
+  // Ejecutamos la lógica de juego a una tasa fija
   const TICK_RATE = 0.1; 
 
   useFrame((state, delta) => {
     if (!isPlaying) return;
 
-    timeRef.current += delta * speed;
+    // Protección contra "Spiral of Death" (Espiral de la muerte)
+    // Si el navegador se cuelga y delta es gigante (ej. 2 segundos),
+    // no queremos ejecutar 200 ticks de golpe, o se colgará para siempre.
+    const safeDelta = Math.min(delta, 0.25); 
+
+    timeRef.current += safeDelta * speed;
     
-    // While loop para catch-up si el frame time es largo, 
-    // pero limitado para evitar espiral de la muerte en lag.
     let ticksProcessed = 0;
-    while (timeRef.current >= TICK_RATE && ticksProcessed < 5) {
+    const MAX_TICKS_PER_FRAME = 10; // Límite duro para mantener FPS
+
+    while (timeRef.current >= TICK_RATE && ticksProcessed < MAX_TICKS_PER_FRAME) {
       tick();
       timeRef.current -= TICK_RATE;
       ticksProcessed++;
+    }
+    
+    // Si después del bucle todavía queda mucho tiempo acumulado (porque speed es x20 o lag),
+    // descartamos el exceso para que la visualización alcance a la lógica.
+    if (timeRef.current > TICK_RATE * 2) {
+        timeRef.current = 0;
     }
   });
 
@@ -43,7 +56,7 @@ export const GameScene: React.FC = () => {
           enableRotate={true} 
           maxPolarAngle={Math.PI / 2 - 0.1} 
           minDistance={5}
-          maxDistance={40}
+          maxDistance={80}
         />
 
         {/* Fondo Azul Cielo */}

@@ -4,6 +4,9 @@ import { Human } from './Human';
 import { FoodSource } from './FoodSource';
 
 export const World: React.FC = () => {
+  // Nos suscribimos a los arrays. Cuando cambian (ej. hambre baja), esto re-renderiza.
+  // PERO, como Human.tsx ahora está optimizado para no reiniciar su lógica interna,
+  // el impacto es mínimo.
   const humans = useGameStore((state) => state.humans);
   const foods = useGameStore((state) => state.foods);
 
@@ -15,15 +18,17 @@ export const World: React.FC = () => {
         <meshStandardMaterial color="#5da662" roughness={0.8} metalness={0.1} />
       </mesh>
 
-      {/* Grid Helper para referencia visual */}
       <gridHelper args={[50, 50, 0xffffff, 0x334433]} position={[0, 0.01, 0]} />
 
-      {/* Recursos (Comida) */}
       {foods.map((food) => (
-        <FoodSource key={food.id} position={food.position} />
+        <FoodSource 
+            key={food.id} 
+            position={food.position} 
+            type={food.type}
+            capacity={food.capacity}
+        />
       ))}
 
-      {/* Renderizado de Agentes (Humanos) */}
       {humans.map((human) => (
         <Human 
           key={human.id} 
@@ -31,6 +36,9 @@ export const World: React.FC = () => {
           position={human.position} 
           name={human.name}
           hunger={human.hunger}
+          age={human.age}
+          reproductionCooldown={human.reproductionCooldown}
+          xp={human.xp}
         />
       ))}
     </group>
