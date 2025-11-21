@@ -37,6 +37,10 @@ export const TopBar: React.FC = () => {
 
         <div className="flex space-x-6">
             <div className="flex flex-col items-center">
+                <span className="text-[10px] text-slate-400 uppercase tracking-widest">Madera</span>
+                <span className="text-lg font-bold text-amber-700">🌲 {inventory.wood}</span>
+            </div>
+            <div className="flex flex-col items-center">
                 <span className="text-[10px] text-slate-400 uppercase tracking-widest">Piedra</span>
                 <span className="text-lg font-bold text-slate-300">🪨 {inventory.stone}</span>
             </div>

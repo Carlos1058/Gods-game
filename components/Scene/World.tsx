@@ -5,6 +5,8 @@ import { FoodSource } from './FoodSource';
 import { House } from './House';
 import { Bonfire } from './Bonfire';
 import { ResourceNode } from './ResourceNode';
+import { Tree } from './Tree';
+import { Animal } from './Animal';
 
 export const World: React.FC = () => {
   const humans = useGameStore((state) => state.humans);
@@ -12,8 +14,9 @@ export const World: React.FC = () => {
   const houses = useGameStore((state) => state.houses);
   const bonfires = useGameStore((state) => state.bonfires);
   const resources = useGameStore((state) => state.resources);
+  const trees = useGameStore((state) => state.trees);
+  const animals = useGameStore((state) => state.animals);
 
-  // Dimensiones del Mundo
   const ISLAND_SIZE = 160; 
 
   return (
@@ -38,6 +41,10 @@ export const World: React.FC = () => {
       <gridHelper args={[ISLAND_SIZE, 40, 0xffffff, 0x334433]} position={[0, 0.01, 0]} />
 
       {/* Objetos del juego */}
+      {trees.map(tree => (
+          <Tree key={tree.id} position={tree.position} stage={tree.stage} />
+      ))}
+
       {bonfires.map((bonfire) => (
         <Bonfire key={bonfire.id} position={bonfire.position} />
       ))}
@@ -67,6 +74,10 @@ export const World: React.FC = () => {
             type={food.type}
             capacity={food.capacity}
         />
+      ))}
+      
+      {animals.map(animal => (
+          <Animal key={animal.id} id={animal.id} position={animal.position} type={animal.type} />
       ))}
 
       {humans.map((human) => (
